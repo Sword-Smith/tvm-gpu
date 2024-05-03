@@ -454,12 +454,28 @@ impl MasterTable<BFieldElement> for MasterBaseTable {
             let num_rows = evaluation_domain.length;
             let num_columns = self.randomized_trace_table().ncols();
             prof_start!(maybe_profiler, "LDE-zeros", "LDE");
-            let mut interpolation_polynomials = Array1::zeros(num_columns);
-            let mut extended_columns = Array2::zeros([num_rows, num_columns]);
+            let mut cpu_interpolation_polynomials = Array1::zeros(num_columns);
+            let mut cpu_extended_columns = Array2::zeros([num_rows, num_columns]);
+            let mut gpu_interpolation_polynomials = Array1::zeros(num_columns);
+            let mut gpu_extended_columns = Array2::zeros([num_rows, num_columns]);
             prof_stop!(maybe_profiler, "LDE-zeros");
             let expansion_factor = evaluation_domain.length / randomized_trace_domain.length;
 
-            prof_start!(maybe_profiler, "LDE-inner", "LDE");
+            prof_start!(maybe_profiler, "LDE-CPU", "LDE");
+            Zip::from(cpu_extended_columns.axis_iter_mut(Axis(1)))
+                .and(self.randomized_trace_table().axis_iter(Axis(1)))
+                .and(cpu_interpolation_polynomials.axis_iter_mut(Axis(0)))
+                .par_for_each(|lde_column, trace_column, poly| {
+                    let trace_column = trace_column.as_slice().unwrap();
+                    let cpu_interpolation_polynomial =
+                        randomized_trace_domain.interpolate(trace_column);
+                    let cpu_lde_codeword =
+                        evaluation_domain.evaluate(&cpu_interpolation_polynomial);
+
+                    Array1::from(cpu_lde_codeword).move_into(lde_column);
+                    Array0::from_elem((), cpu_interpolation_polynomial).move_into(poly);
+                });
+            prof_stop!(maybe_profiler, "LDE-CPU");
 
             /* All columns at once, does not work */
             // let trace_columns;
@@ -487,17 +503,11 @@ impl MasterTable<BFieldElement> for MasterBaseTable {
             // }
 
             /* One column at a time, works */
-            Zip::from(extended_columns.axis_iter_mut(Axis(1)))
+            prof_start!(maybe_profiler, "LDE-GPU", "LDE");
+            Zip::from(gpu_extended_columns.axis_iter_mut(Axis(1)))
                 .and(self.randomized_trace_table().axis_iter(Axis(1)))
-                .and(interpolation_polynomials.axis_iter_mut(Axis(0)))
+                .and(gpu_interpolation_polynomials.axis_iter_mut(Axis(0)))
                 .for_each(|lde_column, trace_column, poly| {
-                    // Calculate on CPU, TODO: REMOVE
-                    let trace_column = trace_column.as_slice().unwrap();
-                    let cpu_interpolation_polynomial =
-                        randomized_trace_domain.interpolate(trace_column);
-                    let cpu_lde_codeword =
-                        evaluation_domain.evaluate(&cpu_interpolation_polynomial);
-
                     let trace_column = Array_u64_1d::from_vec(
                         ctx,
                         &trace_column.iter().map(|x| x.raw_u64()).collect_vec(), // I hope this is a NOP :)
@@ -524,18 +534,17 @@ impl MasterTable<BFieldElement> for MasterBaseTable {
                     let gpu_interpolation_polynomial =
                         Polynomial::new(gpu_interpolation_polynomial);
 
-                    // TODO: REMOVE
-                    assert_eq!(cpu_lde_codeword, gpu_lde_codeword);
-                    assert_eq!(cpu_interpolation_polynomial, gpu_interpolation_polynomial);
-
                     Array1::from(gpu_lde_codeword).move_into(lde_column);
                     Array0::from_elem((), gpu_interpolation_polynomial).move_into(poly);
                 });
-            prof_stop!(maybe_profiler, "LDE-inner");
-            self.memoize_low_degree_extended_table(extended_columns);
-            self.memoize_interpolation_polynomials(interpolation_polynomials);
+            prof_stop!(maybe_profiler, "LDE-GPU");
 
-            panic!("Oh my God. Just please crash.");
+            // TODO: REMOVE
+            assert_eq!(cpu_interpolation_polynomials, gpu_interpolation_polynomials);
+            assert_eq!(cpu_extended_columns, gpu_extended_columns);
+
+            self.memoize_low_degree_extended_table(cpu_extended_columns);
+            self.memoize_interpolation_polynomials(cpu_interpolation_polynomials);
         }
     }
 }

@@ -143,6 +143,11 @@ impl Stark {
         master_base_table.low_degree_extend_all_columns(maybe_profiler);
         prof_stop!(maybe_profiler, "LDE");
 
+        let report = maybe_profiler.clone().as_mut().unwrap().report();
+        println!("{report}");
+
+        panic!("Oh my God. Just please crash.");
+
         prof_start!(maybe_profiler, "Merkle tree", "hash");
         let base_merkle_tree = master_base_table.merkle_tree(maybe_profiler);
         prof_stop!(maybe_profiler, "Merkle tree");
