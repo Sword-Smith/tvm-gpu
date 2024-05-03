@@ -96,11 +96,12 @@ impl LeavedMerkleTreeTestData {
 }
 
 /// Convenience function to prove correct execution of the given program.
-pub(crate) fn prove_with_low_security_level(
+pub(crate) fn prove_helper(
     program: &Program,
     public_input: PublicInput,
     non_determinism: NonDeterminism,
     maybe_profiler: &mut Option<TritonProfiler>,
+    stark: Stark,
 ) -> (Stark, Claim, Proof) {
     prof_start!(maybe_profiler, "trace program");
     let (aet, public_output) = program
@@ -113,11 +114,40 @@ pub(crate) fn prove_with_low_security_level(
         .with_output(public_output);
 
     prof_start!(maybe_profiler, "prove");
-    let stark = low_security_stark();
     let proof = stark.prove(&claim, &aet, maybe_profiler).unwrap();
     prof_stop!(maybe_profiler, "prove");
 
     (stark, claim, proof)
+}
+
+pub(crate) fn prove_with_low_security_level(
+    program: &Program,
+    public_input: PublicInput,
+    non_determinism: NonDeterminism,
+    maybe_profiler: &mut Option<TritonProfiler>,
+) -> (Stark, Claim, Proof) {
+    prove_helper(
+        program,
+        public_input,
+        non_determinism,
+        maybe_profiler,
+        low_security_stark(),
+    )
+}
+
+pub(crate) fn prove_with_default_security_level(
+    program: &Program,
+    public_input: PublicInput,
+    non_determinism: NonDeterminism,
+    maybe_profiler: &mut Option<TritonProfiler>,
+) -> (Stark, Claim, Proof) {
+    prove_helper(
+        program,
+        public_input,
+        non_determinism,
+        maybe_profiler,
+        Stark::default(),
+    )
 }
 
 pub(crate) fn low_security_stark() -> Stark {

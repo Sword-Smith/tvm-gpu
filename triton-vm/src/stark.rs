@@ -119,7 +119,7 @@ impl Stark {
         prof_start!(maybe_profiler, "derive additional parameters");
         let padded_height = aet.padded_height();
         // let max_degree = self.derive_max_degree(padded_height);
-        let max_degree = 255; // TODO: DELETE!!
+        let max_degree = 8191; // TODO: DELETE!!
         let fri = self.derive_fri(padded_height)?;
         let quotient_domain = Self::quotient_domain(fri.domain, max_degree)?;
         proof_stream.enqueue(ProofItem::Log2PaddedHeight(padded_height.ilog2()));
@@ -2337,7 +2337,7 @@ pub(crate) mod tests {
 
         let mut profiler = Some(TritonProfiler::new("Prove Fib 100"));
         let (stark, claim, proof) =
-            prove_with_low_security_level(&FIBONACCI_SEQUENCE, stdin, secret_in, &mut profiler);
+            prove_with_default_security_level(&FIBONACCI_SEQUENCE, stdin, secret_in, &mut profiler);
         let mut profiler = profiler.unwrap();
         profiler.finish();
 
