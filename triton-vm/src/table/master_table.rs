@@ -10,6 +10,7 @@ use ndarray::s;
 use ndarray::Array2;
 use ndarray::ArrayView2;
 use ndarray::ArrayViewMut2;
+use ndarray::ViewRepr;
 use ndarray::Zip;
 use rand::distributions::Standard;
 use rand::prelude::Distribution;
@@ -444,8 +445,6 @@ impl MasterTable<BFieldElement> for MasterBaseTable {
 
     fn low_degree_extend_all_columns(&mut self, maybe_profiler: &mut Option<TritonProfiler>) {
         {
-            use gpu_accelerator::{Array_u64_1d, FutharkContext};
-            let mut ctx = FutharkContext::new().unwrap();
             let evaluation_domain = match self.fri_domain().length > self.quotient_domain().length {
                 true => self.fri_domain(),
                 false => self.quotient_domain(),
@@ -456,8 +455,8 @@ impl MasterTable<BFieldElement> for MasterBaseTable {
             prof_start!(maybe_profiler, "LDE-zeros", "LDE");
             let mut cpu_interpolation_polynomials = Array1::zeros(num_columns);
             let mut cpu_extended_columns = Array2::zeros([num_rows, num_columns]);
-            let mut gpu_interpolation_polynomials = Array1::zeros(num_columns);
-            let mut gpu_extended_columns = Array2::zeros([num_rows, num_columns]);
+            // let mut gpu_interpolation_polynomials = Array1::zeros(num_columns);
+            // let mut gpu_extended_columns = Array2::zeros([num_rows, num_columns]);
             prof_stop!(maybe_profiler, "LDE-zeros");
             let expansion_factor = evaluation_domain.length / randomized_trace_domain.length;
 
@@ -503,45 +502,90 @@ impl MasterTable<BFieldElement> for MasterBaseTable {
             // }
 
             /* One column at a time, works */
+            use gpu_accelerator::{Array_u64_1d, Array_u64_2d, FutharkContext};
+            let mut ctx = FutharkContext::new().unwrap();
             prof_start!(maybe_profiler, "LDE-GPU", "LDE");
-            Zip::from(gpu_extended_columns.axis_iter_mut(Axis(1)))
-                .and(self.randomized_trace_table().axis_iter(Axis(1)))
-                .and(gpu_interpolation_polynomials.axis_iter_mut(Axis(0)))
-                .for_each(|lde_column, trace_column, poly| {
-                    let trace_column = Array_u64_1d::from_vec(
-                        ctx,
-                        &trace_column.iter().map(|x| x.raw_u64()).collect_vec(), // I hope this is a NOP :)
-                        &[trace_column.len() as i64],
-                    )
-                    .unwrap();
-                    let (lde_codeword_gpu, interpolant_gpu) = ctx
-                        .lde_single_column(expansion_factor as i64, trace_column)
-                        .unwrap();
-                    let gpu_lde_codeword = lde_codeword_gpu
-                        .to_vec()
-                        .unwrap()
-                        .0
-                        .into_iter()
-                        .map(BFieldElement::from_raw_u64)
-                        .collect_vec();
-                    let gpu_interpolation_polynomial = interpolant_gpu
-                        .to_vec()
-                        .unwrap()
-                        .0
-                        .into_iter()
-                        .map(BFieldElement::from_raw_u64)
-                        .collect_vec();
-                    let gpu_interpolation_polynomial =
-                        Polynomial::new(gpu_interpolation_polynomial);
+            // let bfe_slice =
+            let array_bfield: ArrayBase<ViewRepr<&BFieldElement>, Dim<[usize; 2]>> =
+                self.randomized_trace_table();
 
-                    Array1::from(gpu_lde_codeword).move_into(lde_column);
-                    Array0::from_elem((), gpu_interpolation_polynomial).move_into(poly);
-                });
+            let array_u64: ArrayBase<ViewRepr<&u64>, Dim<[usize; 2]>>;
+            unsafe {
+                array_u64 = std::mem::transmute(array_bfield);
+            }
+            let trace_columns = Array_u64_2d::from_vec(
+                ctx,
+                array_u64.as_slice_memory_order().unwrap(),
+                &[num_columns as i64, randomized_trace_domain.length as i64],
+            )
+            .unwrap();
+            // let bfe_slice = self.randomized_trace_table();
+            // let bfe_slice = bfe_slice.slice(s![.., ..]);
+            // let u64_slice = self
+            //     .randomized_trace_table()
+            //     .slice(s![.., ..])
+            //     .iter()
+            //     .map(|x| x.raw_u64());
+            // let u64_slice;
+            // let trace_columns;
+            // unsafe {
+            //     u64_slice = bfe_slice.as_ptr() as *const Vec<u64>;
+            //     trace_columns = Array_u64_2d::from_vec(
+            //         ctx,
+            //         u64_slice.as_ref().unwrap(),
+            //         &[num_columns as i64, num_rows as i64],
+            //     )
+            //     .unwrap();
+            // }
+
+            let res = ctx
+                .lde_multiple_columns(expansion_factor as i64, trace_columns)
+                .unwrap();
+            // unsafe {
+            //     trace_columns = Array_u64_2d::from_ptr(
+            //         ctx,
+            //         self.randomized_trace_table().as_ptr()
+            //             as *const gpu_accelerator::bindings::futhark_u64_2d,
+            //     );
+            // }
+            // Zip::from(gpu_extended_columns.axis_iter_mut(Axis(1)))
+            //     .and(self.randomized_trace_table().axis_iter(Axis(1)))
+            //     .and(gpu_interpolation_polynomials.axis_iter_mut(Axis(0)))
+            //     .for_each(|lde_column, trace_column, poly| {
+            //         let trace_column = Array_u64_1d::from_vec(
+            //             ctx,
+            //             &trace_column.iter().map(|x| x.raw_u64()).collect_vec(), // I hope this is a NOP :)
+            //             &[trace_column.len() as i64],
+            //         )
+            //         .unwrap();
+            //         let (lde_codeword_gpu, interpolant_gpu) = ctx
+            //             .lde_single_column(expansion_factor as i64, trace_column)
+            //             .unwrap();
+            //         let gpu_lde_codeword = lde_codeword_gpu
+            //             .to_vec()
+            //             .unwrap()
+            //             .0
+            //             .into_iter()
+            //             .map(BFieldElement::from_raw_u64)
+            //             .collect_vec();
+            //         let gpu_interpolation_polynomial = interpolant_gpu
+            //             .to_vec()
+            //             .unwrap()
+            //             .0
+            //             .into_iter()
+            //             .map(BFieldElement::from_raw_u64)
+            //             .collect_vec();
+            //         let gpu_interpolation_polynomial =
+            //             Polynomial::new(gpu_interpolation_polynomial);
+
+            //         Array1::from(gpu_lde_codeword).move_into(lde_column);
+            //         Array0::from_elem((), gpu_interpolation_polynomial).move_into(poly);
+            //     });
             prof_stop!(maybe_profiler, "LDE-GPU");
 
             // TODO: REMOVE
-            assert_eq!(cpu_interpolation_polynomials, gpu_interpolation_polynomials);
-            assert_eq!(cpu_extended_columns, gpu_extended_columns);
+            // assert_eq!(cpu_interpolation_polynomials, gpu_interpolation_polynomials);
+            // assert_eq!(cpu_extended_columns, gpu_extended_columns);
 
             self.memoize_low_degree_extended_table(cpu_extended_columns);
             self.memoize_interpolation_polynomials(cpu_interpolation_polynomials);
