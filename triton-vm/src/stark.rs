@@ -118,7 +118,8 @@ impl Stark {
 
         prof_start!(maybe_profiler, "derive additional parameters");
         let padded_height = aet.padded_height();
-        let max_degree = self.derive_max_degree(padded_height);
+        // let max_degree = self.derive_max_degree(padded_height);
+        let max_degree = 255; // TODO: DELETE!!
         let fri = self.derive_fri(padded_height)?;
         let quotient_domain = Self::quotient_domain(fri.domain, max_degree)?;
         proof_stream.enqueue(ProofItem::Log2PaddedHeight(padded_height.ilog2()));
@@ -139,7 +140,7 @@ impl Stark {
         prof_stop!(maybe_profiler, "randomize trace");
 
         prof_start!(maybe_profiler, "LDE", "LDE");
-        master_base_table.low_degree_extend_all_columns();
+        master_base_table.low_degree_extend_all_columns(maybe_profiler);
         prof_stop!(maybe_profiler, "LDE");
 
         prof_start!(maybe_profiler, "Merkle tree", "hash");
@@ -163,7 +164,7 @@ impl Stark {
         prof_stop!(maybe_profiler, "randomize trace");
 
         prof_start!(maybe_profiler, "LDE", "LDE");
-        master_ext_table.low_degree_extend_all_columns();
+        master_ext_table.low_degree_extend_all_columns(maybe_profiler);
         prof_stop!(maybe_profiler, "LDE");
 
         prof_start!(maybe_profiler, "Merkle tree", "hash");

@@ -253,29 +253,7 @@ where
     /// low-degree extended columns can be accessed using
     /// [`quotient_domain_table`](Self::quotient_domain_table) and
     /// [`fri_domain_table`](Self::fri_domain_table).
-    fn low_degree_extend_all_columns(&mut self) {
-        let evaluation_domain = match self.fri_domain().length > self.quotient_domain().length {
-            true => self.fri_domain(),
-            false => self.quotient_domain(),
-        };
-        let randomized_trace_domain = self.randomized_trace_domain();
-        let num_rows = evaluation_domain.length;
-        let num_columns = self.randomized_trace_table().ncols();
-        let mut interpolation_polynomials = Array1::zeros(num_columns);
-        let mut extended_columns = Array2::zeros([num_rows, num_columns]);
-        Zip::from(extended_columns.axis_iter_mut(Axis(1)))
-            .and(self.randomized_trace_table().axis_iter(Axis(1)))
-            .and(interpolation_polynomials.axis_iter_mut(Axis(0)))
-            .par_for_each(|lde_column, trace_column, poly| {
-                let trace_column = trace_column.as_slice().unwrap();
-                let interpolation_polynomial = randomized_trace_domain.interpolate(trace_column);
-                let lde_codeword = evaluation_domain.evaluate(&interpolation_polynomial);
-                Array1::from(lde_codeword).move_into(lde_column);
-                Array0::from_elem((), interpolation_polynomial).move_into(poly);
-            });
-        self.memoize_low_degree_extended_table(extended_columns);
-        self.memoize_interpolation_polynomials(interpolation_polynomials);
-    }
+    fn low_degree_extend_all_columns(&mut self, maybe_profiler: &mut Option<TritonProfiler>);
 
     /// Not intended for direct use, but through [`Self::low_degree_extend_all_columns`].
     fn memoize_low_degree_extended_table(&mut self, low_degree_extended_columns: Array2<FF>);
@@ -292,7 +270,7 @@ where
     );
 
     /// Requires having called
-    /// [`low_degree_extend_all_columns`](Self::low_degree_extend_all_columns) first.    
+    /// [`low_degree_extend_all_columns`](Self::low_degree_extend_all_columns) first.
     fn interpolation_polynomials(&self) -> ArrayView1<Polynomial<XFieldElement>>;
 
     /// Get one row of the table at an arbitrary index. Notably, the index does not have to be in
@@ -463,6 +441,103 @@ impl MasterTable<BFieldElement> for MasterBaseTable {
     fn hash_one_row(row: ArrayView1<BFieldElement>) -> Digest {
         Tip5::hash_varlen(row.as_slice().unwrap())
     }
+
+    fn low_degree_extend_all_columns(&mut self, maybe_profiler: &mut Option<TritonProfiler>) {
+        {
+            use gpu_accelerator::{Array_u64_1d, FutharkContext};
+            let mut ctx = FutharkContext::new().unwrap();
+            let evaluation_domain = match self.fri_domain().length > self.quotient_domain().length {
+                true => self.fri_domain(),
+                false => self.quotient_domain(),
+            };
+            let randomized_trace_domain = self.randomized_trace_domain();
+            let num_rows = evaluation_domain.length;
+            let num_columns = self.randomized_trace_table().ncols();
+            prof_start!(maybe_profiler, "LDE-zeros", "LDE");
+            let mut interpolation_polynomials = Array1::zeros(num_columns);
+            let mut extended_columns = Array2::zeros([num_rows, num_columns]);
+            prof_stop!(maybe_profiler, "LDE-zeros");
+            let expansion_factor = evaluation_domain.length / randomized_trace_domain.length;
+
+            prof_start!(maybe_profiler, "LDE-inner", "LDE");
+
+            /* All columns at once, does not work */
+            // let trace_columns;
+            // unsafe {
+            //     trace_columns = Array_u64_2d::from_ptr(
+            //         ctx,
+            //         self.randomized_trace_table().as_ptr()
+            //             as *const gpu_accelerator::bindings::futhark_u64_2d,
+            //     );
+            // }
+            // let res = ctx
+            //     .lde_multiple_columns(expansion_factor as i64, trace_columns)
+            //     .unwrap();
+            // let (extended_columns, interpolation_polynomials): (
+            //     ArrayBase<OwnedRepr<BFieldElement>, Dim<[usize; 2]>>,
+            //     ArrayBase<OwnedRepr<Polynomial<BFieldElement>>, Dim<[usize; 1]>>,
+            // );
+            // unsafe {
+            //     let raw_ptr = res.0.as_raw_mut()
+            //         as *const ArrayBase<OwnedRepr<BFieldElement>, Dim<[usize; 2]>>;
+            //     extended_columns = raw_ptr.as_ref().unwrap().clone();
+            //     let raw_ptr_polys = res.1.as_raw_mut()
+            //         as *const ArrayBase<OwnedRepr<Polynomial<BFieldElement>>, Dim<[usize; 1]>>;
+            //     interpolation_polynomials = raw_ptr_polys.as_ref().unwrap().clone();
+            // }
+
+            /* One column at a time, works */
+            Zip::from(extended_columns.axis_iter_mut(Axis(1)))
+                .and(self.randomized_trace_table().axis_iter(Axis(1)))
+                .and(interpolation_polynomials.axis_iter_mut(Axis(0)))
+                .for_each(|lde_column, trace_column, poly| {
+                    // Calculate on CPU, TODO: REMOVE
+                    let trace_column = trace_column.as_slice().unwrap();
+                    let cpu_interpolation_polynomial =
+                        randomized_trace_domain.interpolate(trace_column);
+                    let cpu_lde_codeword =
+                        evaluation_domain.evaluate(&cpu_interpolation_polynomial);
+
+                    let trace_column = Array_u64_1d::from_vec(
+                        ctx,
+                        &trace_column.iter().map(|x| x.raw_u64()).collect_vec(), // I hope this is a NOP :)
+                        &[trace_column.len() as i64],
+                    )
+                    .unwrap();
+                    let (lde_codeword_gpu, interpolant_gpu) = ctx
+                        .lde_single_column(expansion_factor as i64, trace_column)
+                        .unwrap();
+                    let gpu_lde_codeword = lde_codeword_gpu
+                        .to_vec()
+                        .unwrap()
+                        .0
+                        .into_iter()
+                        .map(BFieldElement::from_raw_u64)
+                        .collect_vec();
+                    let gpu_interpolation_polynomial = interpolant_gpu
+                        .to_vec()
+                        .unwrap()
+                        .0
+                        .into_iter()
+                        .map(BFieldElement::from_raw_u64)
+                        .collect_vec();
+                    let gpu_interpolation_polynomial =
+                        Polynomial::new(gpu_interpolation_polynomial);
+
+                    // TODO: REMOVE
+                    assert_eq!(cpu_lde_codeword, gpu_lde_codeword);
+                    assert_eq!(cpu_interpolation_polynomial, gpu_interpolation_polynomial);
+
+                    Array1::from(gpu_lde_codeword).move_into(lde_column);
+                    Array0::from_elem((), gpu_interpolation_polynomial).move_into(poly);
+                });
+            prof_stop!(maybe_profiler, "LDE-inner");
+            self.memoize_low_degree_extended_table(extended_columns);
+            self.memoize_interpolation_polynomials(interpolation_polynomials);
+
+            panic!("Oh my God. Just please crash.");
+        }
+    }
 }
 
 impl MasterTable<XFieldElement> for MasterExtTable {
@@ -565,6 +640,39 @@ impl MasterTable<XFieldElement> for MasterExtTable {
         let interpret_xfe_as_bfes = |xfe: &XFieldElement| xfe.coefficients.to_vec();
         let row_as_bfes = row.iter().map(interpret_xfe_as_bfes).concat();
         Tip5::hash_varlen(&row_as_bfes)
+    }
+
+    fn low_degree_extend_all_columns(&mut self, maybe_profiler: &mut Option<TritonProfiler>) {
+        {
+            let evaluation_domain = match self.fri_domain().length > self.quotient_domain().length {
+                true => self.fri_domain(),
+                false => self.quotient_domain(),
+            };
+            let randomized_trace_domain = self.randomized_trace_domain();
+            let num_rows = evaluation_domain.length;
+            let num_columns = self.randomized_trace_table().ncols();
+            prof_start!(maybe_profiler, "LDE-zeros", "LDE");
+            let mut interpolation_polynomials = Array1::zeros(num_columns);
+            let mut extended_columns = Array2::zeros([num_rows, num_columns]);
+            prof_stop!(maybe_profiler, "LDE-zeros");
+
+            prof_start!(maybe_profiler, "LDE-inner", "LDE");
+            Zip::from(extended_columns.axis_iter_mut(Axis(1)))
+                .and(self.randomized_trace_table().axis_iter(Axis(1)))
+                .and(interpolation_polynomials.axis_iter_mut(Axis(0)))
+                .par_for_each(|lde_column, trace_column, poly| {
+                    let trace_column = trace_column.as_slice().unwrap();
+                    let interpolation_polynomial =
+                        randomized_trace_domain.interpolate(trace_column);
+                    let lde_codeword = evaluation_domain.evaluate(&interpolation_polynomial);
+                    Array1::from(lde_codeword).move_into(lde_column);
+                    Array0::from_elem((), interpolation_polynomial).move_into(poly);
+                });
+            prof_stop!(maybe_profiler, "LDE-inner");
+
+            self.memoize_low_degree_extended_table(extended_columns);
+            self.memoize_interpolation_polynomials(interpolation_polynomials);
+        }
     }
 }
 
