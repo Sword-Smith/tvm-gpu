@@ -2,6 +2,8 @@ use std::ops::Mul;
 use std::ops::MulAssign;
 use std::ops::Range;
 
+use gpu_accelerator::Array_u64_2d;
+use gpu_accelerator::FutharkContext;
 use itertools::Itertools;
 use master_table::extension_table::Evaluable;
 use ndarray::parallel::prelude::*;
@@ -477,123 +479,52 @@ impl MasterTable<BFieldElement> for MasterBaseTable {
                 });
             prof_stop!(maybe_profiler, "LDE-CPU");
 
-            /* All columns at once, does not work */
-            // let trace_columns;
-            // unsafe {
-            //     trace_columns = Array_u64_2d::from_ptr(
-            //         ctx,
-            //         self.randomized_trace_table().as_ptr()
-            //             as *const gpu_accelerator::bindings::futhark_u64_2d,
-            //     );
-            // }
-            // let res = ctx
-            //     .lde_multiple_columns(expansion_factor as i64, trace_columns)
-            //     .unwrap();
-            // let (extended_columns, interpolation_polynomials): (
-            //     ArrayBase<OwnedRepr<BFieldElement>, Dim<[usize; 2]>>,
-            //     ArrayBase<OwnedRepr<Polynomial<BFieldElement>>, Dim<[usize; 1]>>,
-            // );
-            // unsafe {
-            //     let raw_ptr = res.0.as_raw_mut()
-            //         as *const ArrayBase<OwnedRepr<BFieldElement>, Dim<[usize; 2]>>;
-            //     extended_columns = raw_ptr.as_ref().unwrap().clone();
-            //     let raw_ptr_polys = res.1.as_raw_mut()
-            //         as *const ArrayBase<OwnedRepr<Polynomial<BFieldElement>>, Dim<[usize; 1]>>;
-            //     interpolation_polynomials = raw_ptr_polys.as_ref().unwrap().clone();
-            // }
-
-            /* One column at a time, works */
-            use gpu_accelerator::{Array_u64_1d, Array_u64_2d, FutharkContext};
             let mut ctx = FutharkContext::new().unwrap();
             prof_start!(maybe_profiler, "LDE-GPU", "LDE");
-            // let bfe_slice =
+
+            prof_start!(maybe_profiler, "LDE-GPU-0", "LDE");
             let array_bfield: ArrayBase<ViewRepr<&BFieldElement>, Dim<[usize; 2]>> =
                 self.randomized_trace_table();
+            prof_stop!(maybe_profiler, "LDE-GPU-0");
 
+            prof_start!(maybe_profiler, "LDE-GPU-1", "LDE");
             let array_u64: ArrayBase<ViewRepr<&u64>, Dim<[usize; 2]>>;
             unsafe {
                 array_u64 = std::mem::transmute(array_bfield);
             }
+            prof_stop!(maybe_profiler, "LDE-GPU-1");
+            prof_start!(maybe_profiler, "LDE-GPU-2", "LDE");
             let trace_columns = Array_u64_2d::from_vec(
                 ctx,
                 array_u64.as_slice_memory_order().unwrap(),
                 &[num_columns as i64, randomized_trace_domain.length as i64],
             )
             .unwrap();
-            // let bfe_slice = self.randomized_trace_table();
-            // let bfe_slice = bfe_slice.slice(s![.., ..]);
-            // let u64_slice = self
-            //     .randomized_trace_table()
-            //     .slice(s![.., ..])
-            //     .iter()
-            //     .map(|x| x.raw_u64());
-            // let u64_slice;
-            // let trace_columns;
-            // unsafe {
-            //     u64_slice = bfe_slice.as_ptr() as *const Vec<u64>;
-            //     trace_columns = Array_u64_2d::from_vec(
-            //         ctx,
-            //         u64_slice.as_ref().unwrap(),
-            //         &[num_columns as i64, num_rows as i64],
-            //     )
-            //     .unwrap();
-            // }
+            prof_stop!(maybe_profiler, "LDE-GPU-2");
 
+            prof_start!(maybe_profiler, "LDE-GPU-3", "LDE");
             let res: (Array_u64_2d, Array_u64_2d) = ctx
                 .lde_multiple_columns(expansion_factor as i64, trace_columns)
                 .unwrap();
+            prof_stop!(maybe_profiler, "LDE-GPU-3");
+
+            prof_start!(maybe_profiler, "LDE-GPU-4", "LDE");
             let (data, shape_vec) = res.0.to_vec().unwrap();
             let shape: (usize, usize) = (
                 shape_vec[0].try_into().unwrap(),
                 shape_vec[1].try_into().unwrap(),
             );
+            prof_stop!(maybe_profiler, "LDE-GPU-4");
             println!("shape: {:?}", shape);
+
+            prof_start!(maybe_profiler, "LDE-GPU-5", "LDE");
             let gpu_extended_columns_u64s = Array2::<u64>::from_shape_vec(shape, data).unwrap();
             let gpu_extended_columns: ArrayBase<OwnedRepr<BFieldElement>, Dim<[usize; 2]>>;
             unsafe {
                 gpu_extended_columns = std::mem::transmute(gpu_extended_columns_u64s);
             }
-            // res.0.
-            // unsafe {
-            //     trace_columns = Array_u64_2d::from_ptr(
-            //         ctx,
-            //         self.randomized_trace_table().as_ptr()
-            //             as *const gpu_accelerator::bindings::futhark_u64_2d,
-            //     );
-            // }
-            // Zip::from(gpu_extended_columns.axis_iter_mut(Axis(1)))
-            //     .and(self.randomized_trace_table().axis_iter(Axis(1)))
-            //     .and(gpu_interpolation_polynomials.axis_iter_mut(Axis(0)))
-            //     .for_each(|lde_column, trace_column, poly| {
-            //         let trace_column = Array_u64_1d::from_vec(
-            //             ctx,
-            //             &trace_column.iter().map(|x| x.raw_u64()).collect_vec(), // I hope this is a NOP :)
-            //             &[trace_column.len() as i64],
-            //         )
-            //         .unwrap();
-            //         let (lde_codeword_gpu, interpolant_gpu) = ctx
-            //             .lde_single_column(expansion_factor as i64, trace_column)
-            //             .unwrap();
-            //         let gpu_lde_codeword = lde_codeword_gpu
-            //             .to_vec()
-            //             .unwrap()
-            //             .0
-            //             .into_iter()
-            //             .map(BFieldElement::from_raw_u64)
-            //             .collect_vec();
-            //         let gpu_interpolation_polynomial = interpolant_gpu
-            //             .to_vec()
-            //             .unwrap()
-            //             .0
-            //             .into_iter()
-            //             .map(BFieldElement::from_raw_u64)
-            //             .collect_vec();
-            //         let gpu_interpolation_polynomial =
-            //             Polynomial::new(gpu_interpolation_polynomial);
+            prof_stop!(maybe_profiler, "LDE-GPU-5");
 
-            //         Array1::from(gpu_lde_codeword).move_into(lde_column);
-            //         Array0::from_elem((), gpu_interpolation_polynomial).move_into(poly);
-            //     });
             prof_stop!(maybe_profiler, "LDE-GPU");
 
             // TODO: REMOVE

@@ -119,7 +119,7 @@ impl Stark {
         prof_start!(maybe_profiler, "derive additional parameters");
         let padded_height = aet.padded_height();
         // let max_degree = self.derive_max_degree(padded_height);
-        let max_degree = 8191; // TODO: DELETE!!
+        let max_degree = 2 << 20; // TODO: DELETE!!
         let fri = self.derive_fri(padded_height)?;
         let quotient_domain = Self::quotient_domain(fri.domain, max_degree)?;
         proof_stream.enqueue(ProofItem::Log2PaddedHeight(padded_height.ilog2()));

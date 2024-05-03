@@ -3,7 +3,7 @@ members = ["triton-vm", "constraint-evaluation-generator"]
 resolver = "2"
 
 [profile.test]
-opt-level = 1
+opt-level = 3
 
 [profile.release]
 lto = "thin"
