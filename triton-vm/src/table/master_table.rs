@@ -10,6 +10,7 @@ use ndarray::s;
 use ndarray::Array2;
 use ndarray::ArrayView2;
 use ndarray::ArrayViewMut2;
+use ndarray::OwnedRepr;
 use ndarray::ViewRepr;
 use ndarray::Zip;
 use rand::distributions::Standard;
@@ -538,9 +539,21 @@ impl MasterTable<BFieldElement> for MasterBaseTable {
             //     .unwrap();
             // }
 
-            let res = ctx
+            let res: (Array_u64_2d, Array_u64_2d) = ctx
                 .lde_multiple_columns(expansion_factor as i64, trace_columns)
                 .unwrap();
+            let (data, shape_vec) = res.0.to_vec().unwrap();
+            let shape: (usize, usize) = (
+                shape_vec[0].try_into().unwrap(),
+                shape_vec[1].try_into().unwrap(),
+            );
+            println!("shape: {:?}", shape);
+            let gpu_extended_columns_u64s = Array2::<u64>::from_shape_vec(shape, data).unwrap();
+            let gpu_extended_columns: ArrayBase<OwnedRepr<BFieldElement>, Dim<[usize; 2]>>;
+            unsafe {
+                gpu_extended_columns = std::mem::transmute(gpu_extended_columns_u64s);
+            }
+            // res.0.
             // unsafe {
             //     trace_columns = Array_u64_2d::from_ptr(
             //         ctx,
@@ -585,7 +598,7 @@ impl MasterTable<BFieldElement> for MasterBaseTable {
 
             // TODO: REMOVE
             // assert_eq!(cpu_interpolation_polynomials, gpu_interpolation_polynomials);
-            // assert_eq!(cpu_extended_columns, gpu_extended_columns);
+            assert_eq!(cpu_extended_columns, gpu_extended_columns);
 
             self.memoize_low_degree_extended_table(cpu_extended_columns);
             self.memoize_interpolation_polynomials(cpu_interpolation_polynomials);
